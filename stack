@@ -46,6 +46,7 @@ function command_vault_init {
 }
 
 function command_vault_unseal {
+  discover_stack_context
   run_vault_unseal
 }
 
@@ -73,13 +74,19 @@ function run_vault_init {
 }
 
 function run_vault_unseal {
-  local key host
+  local key host resp http_code content
 
   log_info "Unsealing Vault."
 
   for key in $(jq -r '.keys[]' "$SECRETS/keys.json"); do
     for host in $VAULT_FQDN_NODES; do
-      curl -s -w "%{http_code}" -X POST https://$host:$VAULT_API_PORT/v1/sys/unseal --data "{\"key\": \"$key\"}"
+      resp=$(curl --cacert "$SECRETS/ca.crt" -s -w "%{http_code}" https://$host:$VAULT_API_PORT/v1/sys/unseal --data "{\"key\": \"$key\"}")
+      http_code="${resp: -3}"
+      content="${resp::-3}"
+
+      if [ "$http_code" != "200" ]; then
+        log_error "Failed to unseal $host due to [$http_code]: $content"
+      fi
     done
   done
 }
