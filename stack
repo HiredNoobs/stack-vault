@@ -26,8 +26,7 @@ function vault_health {
     ready_count=0
 
     for host in $VAULT_FQDN_NODES; do
-      resp=$(curl -s -w "%{http_code}" \
-        "https://$host/v1/sys/health?uninitcode=200&sealedcode=200")
+      resp=$(curl --cacert "$SECRETS/ca.crt" -s -w "%{http_code}" https://$host:$VAULT_API_PORT/v1/sys/health\?uninitcode\=200\&sealedcode\=200)
 
       http_code="${resp: -3}"
       content="${resp::-3}"
