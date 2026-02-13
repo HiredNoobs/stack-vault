@@ -5,12 +5,82 @@
 # -----------------------------------------------------
 function build_secrets {
   make-ca -o "$SECRETS"
-  make-cert vault "$VAULT_NODES" --ca-key "$SECRETS/ca.key" --ca-crt "$SECRETS/ca.crt" -o "$SECRETS"
+  make-cert vault "$VAULT_FQDN_NODES" --ca-key "$SECRETS/ca.key" --ca-crt "$SECRETS/ca.crt" -o "$SECRETS"
+}
+
+function vault_health {
+  local resp http_code content start now elapsed
+
+  log_info "Waiting for Vault to be ready..."
+
+  start=$(date +%s)
+  while true; do
+    resp=$(curl -s -w "%{http_code}" https://vault.$DOMAIN/v1/sys/health\?uninitcode\=200\&sealedcode\=200)
+    http_code="${resp: -3}"
+    content="${resp::-3}"
+
+    if [ "$http_code" == "200" ]; then
+      log_info "Vault ready."
+      return 0
+    fi
+
+    now=$(date +%s)
+    elapsed=$(( now - start ))
+    
+    if (( elapsed > 300 )); then
+      log_error "Vault did not become ready within 5 minutes."
+      log_error "Last response: $content"
+      exit 1
+    fi
+    
+    sleep 5
+  done
+}
+
+# -----------------------------------------------------
+# Commands
+# -----------------------------------------------------
+
+function command_vault_init {
+  run_vault_init
+}
+
+function command_vault_unseal {
+  run_vault_unseal
 }
 
 # -----------------------------------------------------
 # Stack functions
 # -----------------------------------------------------
+
+function run_vault_init {
+  local resp http_code content
+
+  log_info "Initialising Vault..."
+
+  resp=$(curl -s -w "%{http_code}" https://vault.$DOMAIN/v1/sys/init --data '{"secret_shares": 4, "secret_threshold": 3}')
+  http_code="${resp: -3}"
+  content="${resp::-3}"
+
+  if [ "$http_code" == "200" ]; then
+    echo "$content" > "$SECRETS/keys.json"
+  elif echo "$content" | grep -q '"Vault is already initialized"'; then
+    log_info "Vault is already initialised..."
+  else
+    log_error "Failed to initialise Vault."
+    exit 1
+  fi
+}
+
+function run_vault_unseal {
+  local key
+
+  log_info "Unsealing Vault."
+
+  for key in $(jq -r '.keys[]' "$SECRETS/keys.json"); do
+    curl -s -w "%{http_code}" -X POST https://vault.$DOMAIN/v1/sys/unseal --data "{\"key\": \"$key\"}"
+  done
+}
 
 function stack_check_env {
   if [ ! -d "$SECRETS" ]; then
@@ -39,7 +109,7 @@ function stack_env {
 function stack_deploy {
   build_secrets
   docker stack deploy --detach=true -c vault.yml "$STACK"
-  timeout 300 bash -c 'while [[ "$(curl -s -o /dev/null -w ''%{http_code}'' https://vault.$DOMAIN)" != "200" ]]; do sleep 5; done' || exit 1
-  log_info "Vault ready..."
-  # TODO: Init/unseal vault
+  vault_health
+  vault_init
+  vault_unseal
 }
