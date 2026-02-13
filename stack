@@ -73,12 +73,14 @@ function run_vault_init {
 }
 
 function run_vault_unseal {
-  local key
+  local key host
 
   log_info "Unsealing Vault."
 
   for key in $(jq -r '.keys[]' "$SECRETS/keys.json"); do
-    curl -s -w "%{http_code}" -X POST https://vault.$DOMAIN/v1/sys/unseal --data "{\"key\": \"$key\"}"
+    for host in $VAULT_FQDN_NODES; do
+      curl -s -w "%{http_code}" -X POST https://$host:$VAULT_API_PORT/v1/sys/unseal --data "{\"key\": \"$key\"}"
+    done
   done
 }
 
