@@ -4,8 +4,15 @@
 # Helper functions
 # -----------------------------------------------------
 function build_secrets {
+  local container_hostnames vault_dns_sans
+
+  for ((i=1; i<=VAULT_REPLICAS; i++)); do
+    container_hostnames+="vault$i"
+  done
+  vault_dns_sans="$VAULT_FQDN_NODES $container_hostnames"
+
   make-ca -o "$SECRETS"
-  make-cert vault "$VAULT_FQDN_NODES" --ca-key "$SECRETS/ca.key" --ca-crt "$SECRETS/ca.crt" -o "$SECRETS"
+  make-cert vault "$vault_dns_sans" --ca-key "$SECRETS/ca.key" --ca-crt "$SECRETS/ca.crt" -o "$SECRETS"
 }
 
 function vault_health {
