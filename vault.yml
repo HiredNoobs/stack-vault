@@ -7,6 +7,9 @@ services:
         published: $VAULT_API_PORT
         target: $VAULT_API_PORT
         protocol: tcp
+    configs:
+      - source: lab_policy
+        target: /vault/config/lab-policy.hcl
     secrets:
       - source: tls_crt
         target: /vault/tls/vault.crt
@@ -17,6 +20,7 @@ services:
     volumes:
       - vault_data:/vault/file
     environment:
+      VAULT_ADDR: https://vault.$DOMAIN
       VAULT_LOCAL_CONFIG: >
         {
           "api_addr": "https://vault{{.Task.Slot}}:$VAULT_API_PORT",
@@ -64,6 +68,10 @@ services:
         max_replicas_per_node: 1
         constraints:
           - node.labels.${STACK}_vault == 1
+
+configs:
+  lab_policy:
+    file: ${CONFIGS}/lab-policy.hcl
 
 secrets:
   tls_crt:
