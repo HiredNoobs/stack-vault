@@ -29,7 +29,8 @@ services:
             "tcp": {
               "address": "0.0.0.0:$VAULT_API_PORT",
               "tls_cert_file": "/vault/tls/vault.crt",
-              "tls_key_file": "/vault/tls/vault.key"
+              "tls_key_file": "/vault/tls/vault.key",
+              "tls_disable_client_certs": "true"
             }
           },
           "storage": {
@@ -38,13 +39,13 @@ services:
               "node_id": "vault{{.Task.Slot}}",
               "retry_join": [
                 {
-                  "leader_api_addr": "https://vault1:$VAULT_API_PORT",
+                  "leader_api_addr": "https://prod-vault001.$DOMAIN:$VAULT_API_PORT",
                   "leader_ca_cert_file": "/vault/tls/ca.crt",
                   "leader_client_cert_file": "/vault/tls/vault.crt",
                   "leader_client_key_file": "/vault/tls/vault.key"
                 },
                 {
-                  "leader_api_addr": "https://vault2:$VAULT_API_PORT",
+                  "leader_api_addr": "https://prod-vault002.$DOMAIN:$VAULT_API_PORT",
                   "leader_ca_cert_file": "/vault/tls/ca.crt",
                   "leader_client_cert_file": "/vault/tls/vault.crt",
                   "leader_client_key_file": "/vault/tls/vault.key"
@@ -55,6 +56,7 @@ services:
         }
     cap_add:
       - IPC_LOCK
+    command: server
     deploy:
       mode: replicated
       replicas: $VAULT_REPLICAS
