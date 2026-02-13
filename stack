@@ -14,7 +14,7 @@ function build_secrets {
 
 function stack_check_env {
   if [ ! -d "$SECRETS" ]; then
-    echo "Secrets directory is missing from '$ENVIRONMENT_BASE'."
+    log_error "Secrets directory is missing from '$ENVIRONMENT_BASE'."
     exit 1
   fi
 }
@@ -25,11 +25,14 @@ function stack_discover {
 
 function stack_env {
   echo
-  echo "DOCKER IMAGE  = $VAULT_IMAGE"
-  echo "VAULT NODES   = ($VAULT_REPLICAS)"
+  echo "DOCKER IMAGE       = $VAULT_IMAGE"
+  echo "VAULT NODES        = ($VAULT_REPLICAS)"
   list "$VAULT_NODES"
   echo
-  echo "UI            = URL HERE?"
+  echo "VAULT API PORT     = $VAULT_API_PORT"
+  echo "VAULT CLUSTER PORT = $VAULT_CLUSTER_PORT"
+  echo
+  echo "UI                 = https://vault.$DOMAIN"
   echo
 }
 
