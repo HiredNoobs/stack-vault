@@ -16,30 +16,41 @@ function build_secrets {
 }
 
 function vault_health {
-  local resp http_code content start now elapsed
+  local resp http_code content start now elapsed host ready_count
 
-  log_info "Waiting for Vault to be ready..."
+  log_info "Waiting for all Vault nodes to be ready..."
 
   start=$(date +%s)
-  while true; do
-    resp=$(curl -s -w "%{http_code}" https://vault.$DOMAIN/v1/sys/health\?uninitcode\=200\&sealedcode\=200)
-    http_code="${resp: -3}"
-    content="${resp::-3}"
 
-    if [ "$http_code" == "200" ]; then
-      log_info "Vault ready."
+  while true; do
+    ready_count=0
+
+    for host in $VAULT_FQDN_NODES; do
+      resp=$(curl -s -w "%{http_code}" \
+        "https://$host/v1/sys/health?uninitcode=200&sealedcode=200")
+
+      http_code="${resp: -3}"
+      content="${resp::-3}"
+
+      if [[ "$http_code" == "200" ]]; then
+        ((ready_count++))
+      fi
+    done
+
+    if (( ready_count == VAULT_REPLICAS )); then
+      log_info "All Vault nodes are ready."
       return 0
     fi
 
     now=$(date +%s)
     elapsed=$(( now - start ))
-    
+
     if (( elapsed > 300 )); then
-      log_error "Vault did not become ready within 5 minutes."
+      log_error "Vault cluster did not become ready within 5 minutes."
       log_error "Last response: $content"
       exit 1
     fi
-    
+
     sleep 5
   done
 }
@@ -73,7 +84,7 @@ function run_vault_init {
   if [ "$http_code" == "200" ]; then
     echo "$content" > "$SECRETS/keys.json"
   elif echo "$content" | grep -q '"Vault is already initialized"'; then
-    log_info "Vault is already initialised..."
+    log_info "Vault is already initialised."
   else
     log_error "Failed to initialise Vault."
     exit 1
@@ -83,7 +94,7 @@ function run_vault_init {
 function run_vault_unseal {
   local key host resp http_code content
 
-  log_info "Unsealing Vault."
+  log_info "Unsealing Vault..."
 
   for key in $(jq -r '.keys[]' "$SECRETS/keys.json"); do
     for host in $VAULT_FQDN_NODES; do
