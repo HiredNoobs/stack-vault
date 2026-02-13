@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+
+# -----------------------------------------------------
+# Helper functions
+# -----------------------------------------------------
+function build_secrets {
+  make-ca -o "$SECRETS"
+  make-cert vault "$VAULT_NODES" --ca-key "$SECRETS/ca.key" --ca-crt "$SECRETS/ca.crt" -o "$SECRETS"
+}
+
+# -----------------------------------------------------
+# Stack functions
+# -----------------------------------------------------
+
+function stack_check_env {
+  if [ ! -d "$SECRETS" ]; then
+    echo "Secrets directory is missing from '$ENVIRONMENT_BASE'."
+    exit 1
+  fi
+}
+
+function stack_discover {
+  export VAULT_REPLICAS=$(count "$VAULT_NODES")
+}
+
+function stack_env {
+  echo
+  echo "DOCKER IMAGE  = $VAULT_IMAGE"
+  echo "VAULT NODES   = ($VAULT_REPLICAS)"
+  list "$VAULT_NODES"
+  echo
+  echo "UI            = URL HERE?"
+  echo
+}
+
+function stack_deploy {
+  build_secrets
+  docker stack deploy --detach=true -c vault.yml "$STACK"
+  timeout 300 bash -c 'while [[ "$(curl -s -o /dev/null -w ''%{http_code}'' https://vault.$DOMAIN)" != "200" ]]; do sleep 5; done' || exit 1
+  log_info "Vault ready..."
+  # TODO: Init/unseal vault
+}

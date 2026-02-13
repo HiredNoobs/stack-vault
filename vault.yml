@@ -1,0 +1,75 @@
+services:
+  vault:
+    hostname: vault{{.Task.Slot}}
+    image: $VAULT_IMAGE
+    ports:
+      - mode: host
+        published: $VAULT_API_PORT
+        target: $VAULT_API_PORT
+        protocol: tcp
+    secrets:
+      - source: tls_crt
+        target: /vault/tls/vault.crt
+      - source: "tls_key"
+        target: /vault/tls/vault.key
+      - source: "tls_ca"
+        target: /vault/tls/ca.crt
+    volumes:
+      - vault_data:/vault/file
+    environment:
+      VAULT_LOCAL_CONFIG: >
+        {
+          "api_addr": "https://vault{{.Task.Slot}}:$VAULT_API_PORT",
+          "cluster_addr": "https://vault{{.Task.Slot}}:$VAULT_CLUSTER_PORT",
+          "ui": true,
+          "disable_mlock": "true",
+          "max_lease_ttl": "720h",
+          "default_lease_ttl": "168h",
+          "listener": {
+            "tcp": {
+              "address": "0.0.0.0:$VAULT_API_PORT",
+              "tls_cert_file": "/vault/tls/vault.crt",
+              "tls_key_file": "/vault/tls/vault.key"
+            }
+          },
+          "storage": {
+            "raft": {
+              "path": "/vault/file",
+              "node_id": "vault{{.Task.Slot}}",
+              "retry_join": [
+                {
+                  "leader_api_addr": "https://vault1:$VAULT_API_PORT",
+                  "leader_ca_cert_file": "/vault/tls/ca.crt",
+                  "leader_client_cert_file": "/vault/tls/vault.crt",
+                  "leader_client_key_file": "/vault/tls/vault.key"
+                },
+                {
+                  "leader_api_addr": "https://vault2:$VAULT_API_PORT",
+                  "leader_ca_cert_file": "/vault/tls/ca.crt",
+                  "leader_client_cert_file": "/vault/tls/vault.crt",
+                  "leader_client_key_file": "/vault/tls/vault.key"
+                }
+              ]
+            }
+          }
+        }
+    cap_add:
+      - IPC_LOCK
+    deploy:
+      mode: replicated
+      replicas: $VAULT_REPLICAS
+      placement:
+        max_replicas_per_node: 1
+        constraints:
+          - node.labels.${STACK}_vault == 1
+
+secrets:
+  tls_crt:
+    file: ${SECRETS}/vault.crt
+  tls_key:
+    file: ${SECRETS}/vault.key
+  tls_ca:
+    file: ${SECRETS}/ca.crt
+
+volumes:
+  vault_data:
