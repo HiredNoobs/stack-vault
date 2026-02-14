@@ -1,12 +1,65 @@
 #!/usr/bin/env bash
+#
+# Does some basic setup for Vault. Creates the "lab" secret engine, enables
+# userpass authentication, creates a policy for "lab", and creates/updates
+# a default user with the "lab" policy applied to it.
+#
+# Requires: $SECRETS/keys.json to include the root token and an initial user
+# to be defined in $SECRETS/secret.env (if running via deployment else
+# just export VAULT_INIT_USERNAME and VAULT_INIT_PASSWORD manually.)
+#
+# Usage: initial-setup
 
 ROOT_TOKEN=$(jq -r '.root_token' "$SECRETS/keys.json")
 CONTAINER_ID=$(docker -H "ssh://$VAULT_NODE" ps --filter "name=vault" -q)
 
-cat <<EOF | docker -H "ssh://$VAULT_NODE" exec "$CONTAINER_ID" sh
-vault login $ROOT_TOKEN
-vault secrets enable -path=lab kv
-vault policy write lab-policy /vault/config/lab-policy.hcl
-vault auth enable userpass
-vault write auth/userpass/users/$VAULT_INIT_USERNAME password=$VAULT_INIT_PASSWORD policies=lab-policy
+cat <<EOF | docker -H "ssh://$VAULT_NODE" exec -i "$CONTAINER_ID" sh
+set -e
+
+echo "Logging into Vault..."
+vault login $ROOT_TOKEN >/dev/null
+
+if ! vault secrets list | grep -q '^lab/'; then
+  echo "Enabling KV engine at path 'lab/'..."
+  vault secrets enable -path=lab kv
+else
+  echo "KV engine 'lab/' already enabled."
+fi
+
+if ! vault policy read lab-policy >/dev/null 2>&1; then
+  echo "Creating policy 'lab-policy'..."
+  vault policy write lab-policy /vault/config/lab-policy.hcl
+else
+  echo "Policy 'lab-policy' already exists."
+fi
+
+if ! vault auth list | grep -q '^userpass/'; then
+  echo "Enabling userpass auth..."
+  vault auth enable userpass
+else
+  echo "Userpass auth already enabled."
+fi
+
+if ! vault read auth/userpass/users/$VAULT_INIT_USERNAME >/dev/null 2>&1; then
+  echo "Creating user '$VAULT_INIT_USERNAME'..."
+  vault write auth/userpass/users/$VAULT_INIT_USERNAME \
+    password=$VAULT_INIT_PASSWORD \
+    policies=lab-policy
+else
+  echo "User '$VAULT_INIT_USERNAME' already exists."
+
+  USER_POLICIES=\$(vault read auth/userpass/users/$VAULT_INIT_USERNAME 2>/dev/null | \
+    awk '/policies/ {print \$2}')
+
+  if echo "\$USER_POLICIES" | tr ',' '\n' | grep -q '^lab-policy\$'; then
+    echo "User already has 'lab-policy'."
+  else
+    echo "Adding 'lab-policy' to existing user..."
+
+    UPDATED_POLICIES=\$(printf "%s,lab-policy" "\$USER_POLICIES" | sed 's/^,//')
+    vault write auth/userpass/users/$VAULT_INIT_USERNAME \
+      password=$VAULT_INIT_PASSWORD \
+      policies="\$UPDATED_POLICIES"
+  fi
+fi
 EOF
