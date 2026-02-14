@@ -51,14 +51,13 @@ else
   USER_POLICIES=\$(vault read auth/userpass/users/$VAULT_INIT_USERNAME 2>/dev/null | \
     awk '/policies/ {print \$2}')
 
-  if echo "\$USER_POLICIES" | tr ',' '\n' | grep -q '^lab-policy\$'; then
+  if echo "\$USER_POLICIES" | grep -q 'lab-policy'; then
     echo "User already has 'lab-policy'."
   else
     echo "Adding 'lab-policy' to existing user..."
 
-    UPDATED_POLICIES=\$(printf "%s,lab-policy" "\$USER_POLICIES" | sed 's/^,//')
+    UPDATED_POLICIES=\$(echo "\$USER_POLICIES" | sed 's/]$/, lab-policy]/')
     vault write auth/userpass/users/$VAULT_INIT_USERNAME \
-      password=$VAULT_INIT_PASSWORD \
       policies="\$UPDATED_POLICIES"
   fi
 fi
