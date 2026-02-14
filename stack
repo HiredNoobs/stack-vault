@@ -119,6 +119,18 @@ function stack_discover {
   export VAULT_REPLICAS=$(count "$VAULT_NODES")
 }
 
+function stack_tools {
+  local tool="$STACK_PATH/tools/$1"
+  shift
+
+  if [[ -x "$tool" ]]; then
+    "$tool" "$@"
+  else
+    log_error "$tool doesn't exist or isn't executable."
+    exit 1
+  fi
+}
+
 function stack_env {
   echo
   echo "DOCKER IMAGE       = $VAULT_IMAGE"
