@@ -6,7 +6,9 @@ Vault deployment.
 
 The deployment will initialise and unseal Vault automatically but the only valid authentication method will the ``root_token`` that can be found in ``$SECRETS/keys.json``.
 
-To create a user:
+At this point Vault can be manaully configured in the UI/CLI or the ``tools/initial-setup`` script can be used to setup a simple kv secret engine with policies applied to a new user ``$VAULT_INIT_USERNAME`` and ``$VAULT_INIT_PASSWORD`` must be defined in your environment or in the deployments ``secret.env`` for this setup.
+
+To manually setup a kv secret engine and user run the following:
 
 ```bash
 # Enter the CLI of the container
