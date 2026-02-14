@@ -123,12 +123,13 @@ function stack_tools {
   local tool="$STACK_PATH/tools/$1"
   shift
 
-  if [[ -x "$tool" ]]; then
-    "$tool" "$@"
-  else
+  if [[ ! -x "$tool" ]]; then
     log_error "$tool doesn't exist or isn't executable."
     exit 1
   fi
+
+  export VAULT_NODE=$(first "$VAULT_FQDN_NODES")
+  "$tool" "$@"
 }
 
 function stack_env {

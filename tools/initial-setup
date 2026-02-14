@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 
 ROOT_TOKEN=$(jq -r '.root_token' "$SECRETS/keys.json")
-TARGET_NODE=$(first "$VAULT_FQDN_NODES")
-CONTAINER_ID=$(docker -H "ssh://$TARGET_NODE" ps --filter "name=vault" -q)
+CONTAINER_ID=$(docker -H "ssh://$VAULT_NODE" ps --filter "name=vault" -q)
 
-cat <<EOF | docker exec -H "ssh://$TARGET_NODE" $CONTAINER_ID sh
+cat <<EOF | docker exec -H "ssh://$VAULT_NODE" "$CONTAINER_ID" sh
 vault login $ROOT_TOKEN
 vault secrets enable -path=lab kv
 vault policy write lab-policy /vault/config/lab-policy.hcl
