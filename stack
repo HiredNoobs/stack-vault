@@ -7,7 +7,7 @@ function build_secrets {
   local container_hostnames vault_dns_sans
 
   for ((i=1; i<=VAULT_REPLICAS; i++)); do
-    container_hostnames+="vault$i"
+    container_hostnames+="vault$i "
   done
   vault_dns_sans="$VAULT_FQDN_NODES $container_hostnames"
 
@@ -95,8 +95,9 @@ function run_vault_unseal {
 
   log_info "Unsealing Vault..."
 
-  for key in $(jq -r '.keys[]' "$SECRETS/keys.json"); do
-    for host in $VAULT_FQDN_NODES; do
+  for host in $VAULT_FQDN_NODES; do
+    log_info "Unsealing $host..."
+    for key in $(jq -r '.keys[]' "$SECRETS/keys.json"); do
       resp=$(curl --cacert "$SECRETS/ca.crt" -s -w "%{http_code}" https://$host:$VAULT_API_PORT/v1/sys/unseal --data "{\"key\": \"$key\"}")
       http_code="${resp: -3}"
       content="${resp::-3}"
@@ -105,6 +106,12 @@ function run_vault_unseal {
         log_error "Failed to unseal $host due to [$http_code]: $content"
       fi
     done
+    # Necessary else the cluster doesn't form before attempting to unseal the 2nd node
+    # which causes errors as Vault doesn't think the node is ready to unseal.
+    # TODO: Use the API for this? Tried checking for node to be unsealed but
+    # that doesn't give enough time for the cluster to properly form...
+    log_info "Waiting for $host to unseal and initialise."
+    sleep 10
   done
 }
 
@@ -127,6 +134,8 @@ function stack_tools {
     log_error "$tool doesn't exist or isn't executable."
     exit 1
   fi
+
+  log_info "Running $tool with args: $@"
 
   export VAULT_NODE=$(first "$VAULT_FQDN_NODES")
   "$tool" "$@"
@@ -151,4 +160,9 @@ function stack_deploy {
   vault_health
   run_vault_init
   run_vault_unseal
+  if [[ -v VAULT_INIT_USERNAME && -v VAULT_INIT_PASSWORD ]]; then
+    stack_tools initial-setup
+  else
+    log_info "Skipping initial-setup script as either VAULT_INIT_USERNAME or VAULT_INIT_PASSWORD are unset."
+  fi
 }
