@@ -34,7 +34,10 @@ services:
               "address": "0.0.0.0:$VAULT_API_PORT",
               "tls_cert_file": "/vault/tls/vault.crt",
               "tls_key_file": "/vault/tls/vault.key",
-              "tls_disable_client_certs": "true"
+              "tls_disable_client_certs": "true",
+              "telemetry": {
+                "unauthenticated_metrics_access": "true"
+              }
             }
           },
           "storage": {
@@ -57,8 +60,9 @@ services:
               ]
             }
           },
-          "telemetry": {
-            "unauthenticated_metrics_access": "true"
+          telemetry {
+            prometheus_retention_time = "30s",
+            disable_hostname = true
           }
         }
     cap_add:
