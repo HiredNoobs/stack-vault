@@ -57,6 +57,9 @@ services:
               ]
             }
           }
+          telemetry {
+            unauthenticated_metrics_access = "true"
+          }
         }
     cap_add:
       - IPC_LOCK

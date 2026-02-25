@@ -21,7 +21,6 @@ function vault_health {
   log_info "Waiting for all Vault nodes to be ready..."
 
   start=$(date +%s)
-
   while true; do
     ready_count=0
 
@@ -68,7 +67,7 @@ function command_vault_unseal {
 }
 
 # -----------------------------------------------------
-# Stack functions
+# Vault functions
 # -----------------------------------------------------
 
 function run_vault_init {
@@ -115,6 +114,10 @@ function run_vault_unseal {
   done
 }
 
+# -----------------------------------------------------
+# Stack functions
+# -----------------------------------------------------
+
 function stack_check_env {
   if [ ! -d "$SECRETS" ]; then
     log_error "Secrets directory is missing from '$ENVIRONMENT_BASE'."
@@ -135,7 +138,7 @@ function stack_tools {
     exit 1
   fi
 
-  log_info "Running $tool with args: $@"
+  log_info "Running $tool with args: $*"
 
   export VAULT_NODE=$(first "$VAULT_FQDN_NODES")
   "$tool" "$@"
