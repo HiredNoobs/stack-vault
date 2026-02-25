@@ -11,8 +11,13 @@ function build_secrets {
   done
   vault_dns_sans="$VAULT_FQDN_NODES $container_hostnames"
 
-  make-ca -o "$SECRETS"
-  make-cert vault "$vault_dns_sans" --ca-key "$SECRETS/ca.key" --ca-crt "$SECRETS/ca.crt" -o "$SECRETS"
+  if [[ ! -f "$SECRETS/ca.crt" || ! -f "$SECRETS/ca.key" ]]; then
+    make-ca vault -o "$SECRETS"
+  fi
+
+  if [[ ! -f "$SECRETS/vault.crt" || ! -f "$SECRETS/vault.key" ]]; then
+    make-cert vault "$vault_dns_sans" --ca-key "$SECRETS/ca.key" --ca-crt "$SECRETS/ca.crt" -o "$SECRETS"
+  fi
 }
 
 function vault_health {
