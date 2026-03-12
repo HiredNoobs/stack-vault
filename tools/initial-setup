@@ -19,6 +19,9 @@ set -e
 echo "Logging into Vault..."
 vault login $ROOT_TOKEN >/dev/null
 
+# -----------------------------------------------------
+# Enable engines
+# -----------------------------------------------------
 if ! vault secrets list | grep -q '^lab/'; then
   echo "Enabling KV engine at path 'lab/'..."
   vault secrets enable -path=lab kv
@@ -33,6 +36,9 @@ else
   echo "KV v2 engine 'labv2/' already enabled."
 fi
 
+# -----------------------------------------------------
+# Policies
+# -----------------------------------------------------
 if ! vault policy read lab-policy >/dev/null 2>&1; then
   echo "Creating policy 'lab-policy'..."
   vault policy write lab-policy /vault/config/lab-policy.hcl
@@ -47,6 +53,9 @@ else
   echo "Policy 'labv2-policy' already exists."
 fi
 
+# -----------------------------------------------------
+# Enable userpass auth
+# -----------------------------------------------------
 if ! vault auth list | grep -q '^userpass/'; then
   echo "Enabling userpass auth..."
   vault auth enable userpass
@@ -54,6 +63,9 @@ else
   echo "Userpass auth already enabled."
 fi
 
+# -----------------------------------------------------
+# User management
+# -----------------------------------------------------
 if ! vault read auth/userpass/users/$VAULT_INIT_USERNAME >/dev/null 2>&1; then
   echo "Creating user '$VAULT_INIT_USERNAME'..."
   vault write auth/userpass/users/$VAULT_INIT_USERNAME \
@@ -62,27 +74,37 @@ if ! vault read auth/userpass/users/$VAULT_INIT_USERNAME >/dev/null 2>&1; then
 else
   echo "User '$VAULT_INIT_USERNAME' already exists."
 
-  USER_POLICIES=\$(vault read auth/userpass/users/$VAULT_INIT_USERNAME 2>/dev/null | \
-    awk '/policies/ {print \$2}')
+  USER_POLICIES=\$(vault read auth/userpass/users/$VAULT_INIT_USERNAME 2>/dev/null \
+  | awk '/token_policies/ {for (i=2; i<=NF; i++) printf "%s ", \$i}' \
+  | sed 's/.*\[//; s/\].*//' \
+  | tr -s ' ' \
+  | sed 's/^ *//; s/ *\$//' \
+  | sed 's/ /,/g')
+
+  echo "Existing policies: \$USER_POLICIES"
 
   if echo "\$USER_POLICIES" | grep -q 'lab-policy'; then
     echo "User already has 'lab-policy'."
   else
-    echo "Adding 'lab-policy' to existing user..."
-
-    UPDATED_POLICIES=\$(echo "\$USER_POLICIES" | sed 's/]$/, lab-policy]/')
-    vault write auth/userpass/users/$VAULT_INIT_USERNAME \
-      policies="\$UPDATED_POLICIES"
+    echo "Adding 'lab-policy'..."
+    if [ -z "\$USER_POLICIES" ]; then
+      USER_POLICIES="lab-policy"
+    else
+      USER_POLICIES="\$USER_POLICIES,lab-policy"
+    fi
   fi
 
   if echo "\$USER_POLICIES" | grep -q 'labv2-policy'; then
     echo "User already has 'labv2-policy'."
   else
-    echo "Adding 'labv2-policy' to existing user..."
-
-    UPDATED_POLICIES=\$(echo "\$USER_POLICIES" | sed 's/]$/, labv2-policy]/')
-    vault write auth/userpass/users/$VAULT_INIT_USERNAME \
-      policies="\$UPDATED_POLICIES"
+    echo "Adding 'labv2-policy'..."
+    USER_POLICIES="\$USER_POLICIES,labv2-policy"
   fi
+
+  USER_POLICIES=$(echo "\$USER_POLICIES" | tr -s ' ' | sed 's/^ *//; s/ *$//')
+  echo "Final policy list: \$USER_POLICIES"
+
+  vault write "auth/userpass/users/$VAULT_INIT_USERNAME" \
+    token_policies="\$USER_POLICIES"
 fi
 EOF
