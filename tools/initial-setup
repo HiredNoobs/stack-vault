@@ -75,14 +75,14 @@ else
       policies="\$UPDATED_POLICIES"
   fi
 
-  if echo "$USER_POLICIES" | grep -q 'labv2-policy'; then
+  if echo "\$USER_POLICIES" | grep -q 'labv2-policy'; then
     echo "User already has 'labv2-policy'."
   else
     echo "Adding 'labv2-policy' to existing user..."
 
-    UPDATED_POLICIES=$(echo "$USER_POLICIES" | sed 's/]$/, labv2-policy]/')
+    UPDATED_POLICIES=\$(echo "\$USER_POLICIES" | sed 's/]$/, labv2-policy]/')
     vault write auth/userpass/users/$VAULT_INIT_USERNAME \
-      policies="$UPDATED_POLICIES"
+      policies="\$UPDATED_POLICIES"
   fi
 fi
 EOF
