@@ -26,6 +26,13 @@ else
   echo "KV engine 'lab/' already enabled."
 fi
 
+if ! vault secrets list | grep -q '^labv2/'; then
+  echo "Enabling KV v2 engine at path 'labv2/'..."
+  vault secrets enable -path=labv2 -version=2 kv
+else
+  echo "KV v2 engine 'labv2/' already enabled."
+fi
+
 if ! vault policy read lab-policy >/dev/null 2>&1; then
   echo "Creating policy 'lab-policy'..."
   vault policy write lab-policy /vault/config/lab-policy.hcl
