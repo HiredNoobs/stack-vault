@@ -10,6 +10,8 @@ services:
     configs:
       - source: lab_policy
         target: /vault/config/lab-policy.hcl
+      - source: labv2_policy
+        target: /vault/config/labv2-policy.hcl
     secrets:
       - source: tls_crt
         target: /vault/tls/vault.crt
@@ -79,6 +81,8 @@ services:
 configs:
   lab_policy:
     file: ${CONFIGS}/lab-policy.hcl
+  labv2_policy:
+    file: ${CONFIGS}/labv2-policy.hcl
 
 secrets:
   tls_crt:

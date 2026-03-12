@@ -40,6 +40,13 @@ else
   echo "Policy 'lab-policy' already exists."
 fi
 
+if ! vault policy read labv2-policy >/dev/null 2>&1; then
+  echo "Creating policy 'labv2-policy'..."
+  vault policy write labv2-policy /vault/config/labv2-policy.hcl
+else
+  echo "Policy 'labv2-policy' already exists."
+fi
+
 if ! vault auth list | grep -q '^userpass/'; then
   echo "Enabling userpass auth..."
   vault auth enable userpass
@@ -66,6 +73,16 @@ else
     UPDATED_POLICIES=\$(echo "\$USER_POLICIES" | sed 's/]$/, lab-policy]/')
     vault write auth/userpass/users/$VAULT_INIT_USERNAME \
       policies="\$UPDATED_POLICIES"
+  fi
+
+  if echo "$USER_POLICIES" | grep -q 'labv2-policy'; then
+    echo "User already has 'labv2-policy'."
+  else
+    echo "Adding 'labv2-policy' to existing user..."
+
+    UPDATED_POLICIES=$(echo "$USER_POLICIES" | sed 's/]$/, labv2-policy]/')
+    vault write auth/userpass/users/$VAULT_INIT_USERNAME \
+      policies="$UPDATED_POLICIES"
   fi
 fi
 EOF
