@@ -32,6 +32,8 @@ fi
 if ! vault secrets list | grep -q '^labv2/'; then
   echo "Enabling KV v2 engine at path 'labv2/'..."
   vault secrets enable -path=labv2 -version=2 kv
+
+  vault write labv2/config cas_required=true
 else
   echo "KV v2 engine 'labv2/' already enabled."
 fi
