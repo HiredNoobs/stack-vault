@@ -34,6 +34,7 @@ services:
           "listener": {
             "tcp": {
               "address": "0.0.0.0:$VAULT_API_PORT",
+              "cluster_address": "0.0.0.0:$VAULT_CLUSTER_PORT",
               "tls_cert_file": "/vault/tls/vault.crt",
               "tls_key_file": "/vault/tls/vault.key",
               "tls_disable_client_certs": "true",
