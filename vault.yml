@@ -58,6 +58,12 @@ services:
                   "leader_ca_cert_file": "/vault/tls/ca.crt",
                   "leader_client_cert_file": "/vault/tls/vault.crt",
                   "leader_client_key_file": "/vault/tls/vault.key"
+                },
+                {
+                  "leader_api_addr": "https://prod-vault003.$DOMAIN:$VAULT_API_PORT",
+                  "leader_ca_cert_file": "/vault/tls/ca.crt",
+                  "leader_client_cert_file": "/vault/tls/vault.crt",
+                  "leader_client_key_file": "/vault/tls/vault.key"
                 }
               ]
             }
