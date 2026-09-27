@@ -5,19 +5,20 @@
 # a default user with the "lab" policy applied to it.
 #
 # Requires: $SECRETS/keys.json to include the root token and an initial user
-# to be defined in $SECRETS/secret.env (if running via deployment else
+# to be defined in $SECRETS/secrets.env (if running via deployment else
 # just export VAULT_INIT_USERNAME and VAULT_INIT_PASSWORD manually.)
+#
+# Runs in vault-0, requests to a standby are forwarded to the active node.
+# The root token is passed in the script (stdin) rather than as an argument.
 #
 # Usage: initial-setup
 
 ROOT_TOKEN=$(jq -r '.root_token' "$SECRETS/keys.json")
-CONTAINER_ID=$(docker -H "ssh://$VAULT_NODE" ps --filter "name=vault" -q)
 
-cat <<EOF | docker -H "ssh://$VAULT_NODE" exec -i "$CONTAINER_ID" sh
+cat <<EOF | kubectl exec -i vault-0 --namespace "$K8S_NAMESPACE" -c vault -- sh
 set -e
 
-echo "Logging into Vault..."
-vault login $ROOT_TOKEN >/dev/null
+export VAULT_TOKEN=$ROOT_TOKEN
 
 # -----------------------------------------------------
 # Enable engines
@@ -43,14 +44,14 @@ fi
 # -----------------------------------------------------
 if ! vault policy read lab-policy >/dev/null 2>&1; then
   echo "Creating policy 'lab-policy'..."
-  vault policy write lab-policy /vault/config/lab-policy.hcl
+  vault policy write lab-policy /vault/policies/lab-policy.hcl
 else
   echo "Policy 'lab-policy' already exists."
 fi
 
 if ! vault policy read labv2-policy >/dev/null 2>&1; then
   echo "Creating policy 'labv2-policy'..."
-  vault policy write labv2-policy /vault/config/labv2-policy.hcl
+  vault policy write labv2-policy /vault/policies/labv2-policy.hcl
 else
   echo "Policy 'labv2-policy' already exists."
 fi
@@ -103,7 +104,7 @@ else
     USER_POLICIES="\$USER_POLICIES,labv2-policy"
   fi
 
-  USER_POLICIES=$(echo "\$USER_POLICIES" | tr -s ' ' | sed 's/^ *//; s/ *$//')
+  USER_POLICIES=\$(echo "\$USER_POLICIES" | tr -s ' ' | sed 's/^ *//; s/ *\$//')
   echo "Final policy list: \$USER_POLICIES"
 
   vault write "auth/userpass/users/$VAULT_INIT_USERNAME" \

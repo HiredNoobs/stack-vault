@@ -1,122 +1,293 @@
 #!/usr/bin/env bash
+#
+# Vault with raft storage. A StatefulSet with one node per node labelled ${STACK}_vault, a
+# single node or a raft cluster depending on how many are labelled. The config is generated
+# at deploy time to match.
+#
+# Pods start sealed. 'deploy' initialises Vault (first deploy) and unseals every pod, the
+# 'vault_unseal' command does the same after a restart. The keys are only kept in
+# $SECRETS/keys.json.
+
+# Variables substituted in k8s/*.yaml, anything else (e.g. $(POD_NAME)) is left alone.
+K8S_TEMPLATE_VARS='$STACK $VAULT_IMAGE $VAULT_API_PORT $VAULT_CLUSTER_PORT $VAULT_REPLICAS $VAULT_STORAGE_CLASS $VAULT_VOLUME_SIZE $VAULT_CONFIG_CHECKSUM'
 
 # -----------------------------------------------------
 # Helper functions
 # -----------------------------------------------------
-function build_secrets {
-  local container_hostnames vault_dns_sans
 
-  for ((i=1; i<=VAULT_REPLICAS; i++)); do
-    container_hostnames+="vault$i "
+function check_stack_context {
+  k8s_require_longhorn "$VAULT_STORAGE_CLASS"
+}
+
+# 1 is a single node, 3+ a raft cluster. 2 is refused, raft needs both for a quorum so it's
+# less available than one node.
+function check_replicas {
+  local current
+
+  if (( VAULT_REPLICAS == 0 )); then
+    log_error "No nodes are labelled ${STACK}_vault."
+    exit 1
+  elif (( VAULT_REPLICAS == 2 )); then
+    log_error "2 nodes are labelled ${STACK}_vault. Raft needs both for a quorum, label 1 node or 3+."
+    exit 1
+  elif (( VAULT_REPLICAS > 3 && VAULT_REPLICAS % 2 == 0 )); then
+    log_warning "$VAULT_REPLICAS nodes are labelled ${STACK}_vault, an even number tolerates no more failures than one less."
+  fi
+
+  # Removing nodes without removing their raft peers first loses the quorum.
+  current=$(kubectl get statefulset vault --namespace "$K8S_NAMESPACE" -o jsonpath='{.spec.replicas}' 2> /dev/null)
+
+  if [[ -n "$current" ]] && (( VAULT_REPLICAS < current )); then
+    log_error "Vault has $current nodes and $VAULT_REPLICAS are labelled. Remove the extra nodes from raft first"
+    log_error "('vault operator raft remove-peer vault-<n>'), then 'kubectl scale statefulset vault --replicas=$VAULT_REPLICAS' before deploying."
+    exit 1
+  fi
+}
+
+function render {
+  envsubst "$K8S_TEMPLATE_VARS" < "$STACK_PATH/k8s/$1"
+}
+
+# vault.json, with every node in retry_join when it's a cluster. The per node addresses and
+# raft node_id come from env vars in the pod (k8s/vault.yaml).
+function vault_config {
+  local i peers=()
+
+  if (( VAULT_REPLICAS > 1 )); then
+    for ((i = 0; i < VAULT_REPLICAS; i++)); do
+      peers+=("https://vault-$i.vault-internal.$K8S_NAMESPACE.svc:$VAULT_API_PORT")
+    done
+  fi
+
+  jq -n --arg api "$VAULT_API_PORT" --arg cluster "$VAULT_CLUSTER_PORT" '
+    {
+      ui: true,
+      disable_mlock: true,
+      max_lease_ttl: "720h",
+      default_lease_ttl: "168h",
+      listener: {
+        tcp: {
+          address: ("0.0.0.0:" + $api),
+          cluster_address: ("0.0.0.0:" + $cluster),
+          tls_cert_file: "/vault/tls/vault.crt",
+          tls_key_file: "/vault/tls/vault.key",
+          tls_disable_client_certs: true,
+          telemetry: { unauthenticated_metrics_access: true }
+        }
+      },
+      storage: {
+        raft: (
+          { path: "/vault/data" }
+          + if ($ARGS.positional | length) > 0 then
+              { retry_join: [ $ARGS.positional[] | { leader_api_addr: ., leader_ca_cert_file: "/vault/tls/ca.crt" } ] }
+            else {} end
+        )
+      },
+      service_registration: { kubernetes: {} },
+      telemetry: { prometheus_retention_time: "30s", disable_hostname: true }
+    }' --args "${peers[@]}"
+}
+
+# Every name Vault is reached by: the active service (nginx's upstream), each node (raft and
+# nginx's vault1, vault2, ...) and localhost for the CLI in the pod.
+function cert_names {
+  local i
+
+  echo "vault-active vault-active.$K8S_NAMESPACE.svc vault-active.$K8S_NAMESPACE.svc.cluster.local"
+  for ((i = 0; i < VAULT_REPLICAS; i++)); do
+    echo "vault-$i.vault-internal.$K8S_NAMESPACE.svc vault-$i.vault-internal.$K8S_NAMESPACE.svc.cluster.local"
   done
-  vault_dns_sans="$VAULT_FQDN_NODES $container_hostnames"
+  echo "localhost"
+}
+
+# The cert is regenerated when the names change, e.g. when nodes are added.
+function build_secrets {
+  local names
+  names=$(cert_names | xargs)
 
   if [[ ! -f "$SECRETS/ca.crt" || ! -f "$SECRETS/ca.key" ]]; then
     make-ca vault -o "$SECRETS"
   fi
 
-  if [[ ! -f "$SECRETS/vault.crt" || ! -f "$SECRETS/vault.key" ]]; then
-    make-cert vault "$vault_dns_sans" --ca-key "$SECRETS/ca.key" --ca-crt "$SECRETS/ca.crt" -o "$SECRETS"
+  if [[ ! -f "$SECRETS/vault.crt" || ! -f "$SECRETS/vault.key" || "$(cat "$SECRETS/vault.names" 2> /dev/null)" != "$names" ]]; then
+    make-cert vault "$names" -o "$SECRETS" --ca-crt "$SECRETS/ca.crt" --ca-key "$SECRETS/ca.key"
+    echo "$names" > "$SECRETS/vault.names"
   fi
 }
 
-function vault_health {
-  local resp http_code content start now elapsed host ready_count
+# Everything that needs a restart when it changes.
+function config {
+  kubectl create secret generic vault-certs \
+    --from-file=ca.crt="$SECRETS/ca.crt" \
+    --from-file=vault.crt="$SECRETS/vault.crt" \
+    --from-file=vault.key="$SECRETS/vault.key" \
+    --dry-run=client -o yaml
+  echo "---"
+  kubectl create configmap vault-config \
+    --from-literal=vault.json="$(vault_config)" \
+    --dry-run=client -o yaml
+}
 
-  log_info "Waiting for all Vault nodes to be ready..."
+# Prints the pod's `vault status` JSON, nothing if Vault isn't answering yet. It exits 2 when
+# sealed, which isn't an error here.
+function pod_status {
+  kubectl exec "$1" --namespace "$K8S_NAMESPACE" -c vault -- vault status -format=json 2> /dev/null || true
+}
 
+# The generation check stops a status from before the last apply counting as complete.
+function rollout_complete {
+  local generation observed replicas ready updated current update
+
+  read -r generation observed replicas ready updated current update <<< "$(kubectl get statefulset vault --namespace "$K8S_NAMESPACE" \
+    -o jsonpath='{.metadata.generation} {.status.observedGeneration} {.spec.replicas} {.status.readyReplicas} {.status.updatedReplicas} {.status.currentRevision} {.status.updateRevision}')"
+
+  [[ -n "$replicas" && "$observed" == "$generation" && "$ready" == "$replicas" \
+     && "$updated" == "$replicas" && "$current" == "$update" ]]
+}
+
+function wait_for_pods {
+  local i start
+
+  log_info "Waiting for the Vault pods to start..."
   start=$(date +%s)
-  while true; do
-    ready_count=0
 
-    for host in $VAULT_FQDN_NODES; do
-      resp=$(curl --cacert "$SECRETS/ca.crt" -s -w "%{http_code}" https://$host:$VAULT_API_PORT/v1/sys/health\?uninitcode\=200\&sealedcode\=200)
-
-      http_code="${resp: -3}"
-      content="${resp::-3}"
-
-      if [[ "$http_code" == "200" ]]; then
-        ((ready_count++))
+  for ((i = 0; i < VAULT_REPLICAS; i++)); do
+    until [[ -n "$(pod_status "vault-$i")" ]]; do
+      if (( $(date +%s) - start > 600 )); then
+        log_error "vault-$i didn't start within 10 minutes, check 'deployment status' and the PVCs."
+        exit 1
       fi
+      sleep 5
     done
+  done
+}
 
-    if (( ready_count == VAULT_REPLICAS )); then
-      log_info "All Vault nodes are ready."
+# Only on the first deploy. Refuses to overwrite keys.json, or to carry on without it.
+function vault_init {
+  local status out
+
+  status=$(pod_status vault-0)
+
+  if [[ "$(jq -r '.initialized' <<< "$status")" == "true" ]]; then
+    if [[ ! -f "$SECRETS/keys.json" ]]; then
+      log_error "Vault is initialised but '$SECRETS/keys.json' is missing, it can't be unsealed. Restore it from your backup."
+      exit 1
+    fi
+    return 0
+  fi
+
+  if [[ -f "$SECRETS/keys.json" ]]; then
+    log_error "Vault isn't initialised but '$SECRETS/keys.json' exists, it may belong to a Vault whose data was lost."
+    log_error "Move it aside if starting from scratch is intended, then deploy again."
+    exit 1
+  fi
+
+  log_info "Initialising Vault..."
+  if ! out=$(kubectl exec vault-0 --namespace "$K8S_NAMESPACE" -c vault -- \
+               vault operator init -key-shares=4 -key-threshold=3 -format=json); then
+    log_error "Failed to initialise Vault."
+    exit 1
+  fi
+
+  # Same layout as the API's response, which the tooling has always used.
+  (
+    umask 077
+    jq '{keys: .unseal_keys_hex, keys_base64: .unseal_keys_b64, root_token: .root_token}' <<< "$out" > "$SECRETS/keys.json"
+  )
+  log_warning "The unseal keys and root token are in '$SECRETS/keys.json', back them up outside Vault (it can't give them back while it's sealed)."
+}
+
+# Keys are passed on stdin, so they don't show up in process lists.
+function unseal_pod {
+  local pod="$1" key out
+
+  log_info "Unsealing $pod..."
+
+  for key in $(jq -r '.keys[]' "$SECRETS/keys.json"); do
+    if ! out=$(kubectl exec -i "$pod" --namespace "$K8S_NAMESPACE" -c vault -- \
+                 vault operator unseal -format=json - <<< "$key" 2>&1); then
+      # e.g. a new node that hasn't joined the cluster yet, it's tried again on the next pass.
+      log_warning "Couldn't unseal $pod yet: $out"
       return 0
     fi
 
-    now=$(date +%s)
-    elapsed=$(( now - start ))
+    if [[ "$(jq -r '.sealed' <<< "$out" 2> /dev/null)" == "false" ]]; then
+      log_info "$pod is unsealed."
+      return 0
+    fi
+  done
+}
 
-    if (( elapsed > 300 )); then
-      log_error "Vault cluster did not become ready within 5 minutes."
-      log_error "Last response: $content"
+# Unseals every sealed pod until the StatefulSet is rolled out and every pod is ready. Covers
+# the first deploy, nodes joining and pods replaced one at a time by a rolling update.
+function unseal_until_ready {
+  local pod status start
+
+  if [[ ! -f "$SECRETS/keys.json" ]]; then
+    log_error "'$SECRETS/keys.json' is missing, Vault can't be unsealed. Restore it from your backup."
+    exit 1
+  fi
+
+  start=$(date +%s)
+
+  until rollout_complete; do
+    for pod in $(kubectl get pods --namespace "$K8S_NAMESPACE" --selector app.kubernetes.io/name=vault -o name); do
+      pod="${pod#pod/}"
+      status=$(pod_status "$pod")
+
+      if [[ -n "$status" && "$(jq -r '.sealed' <<< "$status")" == "true" ]]; then
+        unseal_pod "$pod"
+      fi
+    done
+
+    if (( $(date +%s) - start > 900 )); then
+      log_error "Vault wasn't ready within 15 minutes, check 'deployment vault_status'."
       exit 1
     fi
 
     sleep 5
   done
+
+  log_info "Every Vault node is unsealed and ready."
+}
+
+# -----------------------------------------------------
+# Override functions
+# -----------------------------------------------------
+
+# Keeps the namespace and the volumes, so the data survives a redeploy (keys.json still applies).
+function run_clean {
+  log_info "'clean' has been overridden by stack."
+  log_info "Removing Vault (namespace $K8S_NAMESPACE), keeping the data volumes."
+  kubectl delete statefulset/vault service/vault-internal service/vault-active pdb/vault \
+    configmap/vault-config secret/vault-certs \
+    serviceaccount/vault role/vault rolebinding/vault \
+    --namespace "$K8S_NAMESPACE" --ignore-not-found --wait=true
+}
+
+# Deleting the namespace removes the volumes and every secret in Vault with them.
+function run_purge {
+  log_info "'purge' has been overridden by stack."
+  log_warning "Removing namespace $K8S_NAMESPACE, including the data volumes."
+  orchestrator_clean
+  orchestrator_purge
+  log_warning "'$SECRETS/keys.json' is for the deleted Vault, move it aside before deploying again."
 }
 
 # -----------------------------------------------------
 # Commands
 # -----------------------------------------------------
 
-function command_vault_init {
-  run_vault_init
-}
-
+# After a restart (node reboot, Talos upgrade, ...) the pods come back sealed.
 function command_vault_unseal {
   discover_stack_context
-  run_vault_unseal
+  unseal_until_ready
 }
 
-# -----------------------------------------------------
-# Vault functions
-# -----------------------------------------------------
-
-function run_vault_init {
-  local resp http_code content
-
-  log_info "Initialising Vault..."
-
-  resp=$(curl -s -w "%{http_code}" https://vault.$DOMAIN/v1/sys/init --data '{"secret_shares": 4, "secret_threshold": 3}')
-  http_code="${resp: -3}"
-  content="${resp::-3}"
-
-  if [ "$http_code" == "200" ]; then
-    echo "$content" > "$SECRETS/keys.json"
-  elif echo "$content" | grep -q '"Vault is already initialized"'; then
-    log_info "Vault is already initialised."
-  else
-    log_error "Failed to initialise Vault."
-    exit 1
-  fi
-}
-
-function run_vault_unseal {
-  local key host resp http_code content
-
-  log_info "Unsealing Vault..."
-
-  for host in $VAULT_FQDN_NODES; do
-    log_info "Unsealing $host..."
-    for key in $(jq -r '.keys[]' "$SECRETS/keys.json"); do
-      resp=$(curl --cacert "$SECRETS/ca.crt" -s -w "%{http_code}" https://$host:$VAULT_API_PORT/v1/sys/unseal --data "{\"key\": \"$key\"}")
-      http_code="${resp: -3}"
-      content="${resp::-3}"
-
-      if [ "$http_code" != "200" ]; then
-        log_error "Failed to unseal $host due to [$http_code]: $content"
-      fi
-    done
-    # Necessary else the cluster doesn't form before attempting to unseal the 2nd node
-    # which causes errors as Vault doesn't think the node is ready to unseal.
-    # TODO: Use the API for this? Tried checking for node to be unsealed but
-    # that doesn't give enough time for the cluster to properly form...
-    log_info "Waiting for $host to unseal and initialise."
-    sleep 10
-  done
+function command_vault_status {
+  discover_stack_context
+  kubectl get pods --namespace "$K8S_NAMESPACE" --selector app.kubernetes.io/name=vault \
+    -o wide -L vault-active,vault-sealed,vault-initialized
 }
 
 # -----------------------------------------------------
@@ -124,8 +295,8 @@ function run_vault_unseal {
 # -----------------------------------------------------
 
 function stack_check_env {
-  if [ ! -d "$SECRETS" ]; then
-    log_error "Secrets directory is missing from '$ENVIRONMENT_BASE'."
+  if [ ! -d "$CONFIGS" ] || [ ! -d "$SECRETS" ]; then
+    log_error "Configs or secrets directory is missing from '$ENVIRONMENT_BASE'."
     exit 1
   fi
 }
@@ -144,30 +315,64 @@ function stack_tools {
   fi
 
   log_info "Running $tool with args: $*"
-
-  export VAULT_NODE=$(first "$VAULT_FQDN_NODES")
   "$tool" "$@"
 }
 
 function stack_env {
   echo
-  echo "DOCKER IMAGE       = $VAULT_IMAGE"
+  echo "VAULT IMAGE        = $VAULT_IMAGE"
   echo "VAULT NODES        = ($VAULT_REPLICAS)"
   list "$VAULT_NODES"
   echo
+  if (( VAULT_REPLICAS == 1 )); then
+    echo "MODE               = single node"
+  else
+    echo "MODE               = raft cluster"
+  fi
   echo "VAULT API PORT     = $VAULT_API_PORT"
   echo "VAULT CLUSTER PORT = $VAULT_CLUSTER_PORT"
+  echo "STORAGE CLASS      = $VAULT_STORAGE_CLASS ($VAULT_VOLUME_SIZE)"
   echo
   echo "UI                 = https://vault.$DOMAIN"
   echo
 }
 
 function stack_deploy {
+  local manifests_config
+
+  check_stack_context
+  check_replicas
   build_secrets
-  docker stack deploy --detach=true -c vault.yml "$STACK"
-  vault_health
-  run_vault_init
-  run_vault_unseal
+
+  manifests_config=$(config)
+  export VAULT_CONFIG_CHECKSUM=$(sha256sum <<< "$manifests_config" | cut -d' ' -f1)
+
+  log_info "Deploying Vault to $K8S_NAMESPACE ($VAULT_REPLICAS node(s))."
+  {
+    render rbac.yaml
+    echo "---"
+    echo "$manifests_config"
+    echo "---"
+    # Only read by initial-setup, so not part of the checksum.
+    kubectl create configmap vault-policies --from-file="$CONFIGS/" --dry-run=client -o yaml
+    echo "---"
+    render services.yaml
+    echo "---"
+    render vault.yaml
+    if (( VAULT_REPLICAS > 1 )); then
+      echo "---"
+      render pdb.yaml
+    fi
+  } | kubectl apply --namespace "$K8S_NAMESPACE" -f -
+
+  if (( VAULT_REPLICAS == 1 )); then
+    kubectl delete pdb vault --namespace "$K8S_NAMESPACE" --ignore-not-found > /dev/null
+  fi
+
+  wait_for_pods
+  vault_init
+  unseal_until_ready
+
   if [[ -v VAULT_INIT_USERNAME && -v VAULT_INIT_PASSWORD ]]; then
     stack_tools initial-setup
   else

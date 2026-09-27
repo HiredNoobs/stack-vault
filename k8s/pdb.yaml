@@ -1,0 +1,13 @@
+# Cluster mode only: drains (e.g. Talos upgrades) take one node at a time so raft keeps its
+# quorum. A single node gets none, it would stop the node ever being drained.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: vault
+  labels:
+    app.kubernetes.io/name: vault
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: vault

@@ -1,0 +1,144 @@
+# ${VAULT_REPLICAS} Vault node(s) with raft storage, one per node labelled ${STACK}_vault. With
+# more than one the nodes join each other (retry_join in vault.json) and raft replicates the data.
+#
+# Pods start sealed and aren't ready until they're unsealed, 'deploy' and 'vault_unseal' do it.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: vault
+  labels:
+    app.kubernetes.io/name: vault
+spec:
+  serviceName: vault-internal
+  replicas: ${VAULT_REPLICAS}
+  # Start every node together, the others can't join until the first is initialised and unsealed.
+  podManagementPolicy: Parallel
+  # The volumes outlive the StatefulSet, only 'purge' removes them.
+  persistentVolumeClaimRetentionPolicy:
+    whenDeleted: Retain
+    whenScaled: Retain
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: vault
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: vault
+      annotations:
+        # Restart the pods (one at a time, 'deploy' unseals them) when the config or certs change.
+        checksum/config: "${VAULT_CONFIG_CHECKSUM}"
+    spec:
+      serviceAccountName: vault
+      nodeSelector:
+        ${STACK}_vault: ""
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: vault
+              topologyKey: kubernetes.io/hostname
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: vault
+      # The vault user from the image, fsGroup lets it read the certs and write its data.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 100
+        runAsGroup: 1000
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: vault
+          image: ${VAULT_IMAGE}
+          # Straight to the binary, the image's entrypoint wants root for setcap/chown.
+          command: ["vault", "server", "-config=/vault/config/vault.json"]
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            # Used by the kubernetes service_registration.
+            - name: VAULT_K8S_POD_NAME
+              value: "$(POD_NAME)"
+            - name: VAULT_K8S_NAMESPACE
+              value: "$(POD_NAMESPACE)"
+            # Per node, so vault.json is the same for every pod.
+            - name: VAULT_API_ADDR
+              value: "https://$(POD_NAME).vault-internal.$(POD_NAMESPACE).svc:${VAULT_API_PORT}"
+            - name: VAULT_CLUSTER_ADDR
+              value: "https://$(POD_NAME).vault-internal.$(POD_NAMESPACE).svc:${VAULT_CLUSTER_PORT}"
+            - name: VAULT_RAFT_NODE_ID
+              value: "$(POD_NAME)"
+            # For the CLI in the pod (vault status, operator unseal, initial-setup).
+            - name: VAULT_ADDR
+              value: "https://localhost:${VAULT_API_PORT}"
+            - name: VAULT_CACERT
+              value: /vault/tls/ca.crt
+            - name: HOME
+              value: /tmp
+          ports:
+            - name: https
+              containerPort: ${VAULT_API_PORT}
+              protocol: TCP
+            - name: cluster
+              containerPort: ${VAULT_CLUSTER_PORT}
+              protocol: TCP
+          # Ready once unsealed, as the active node or a standby. Sealed or uninitialised pods get
+          # no traffic. There's no liveness probe, a sealed node needs unsealing, not restarting.
+          readinessProbe:
+            httpGet:
+              path: /v1/sys/health?standbyok=true
+              port: https
+              scheme: HTTPS
+            periodSeconds: 5
+            failureThreshold: 2
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+          volumeMounts:
+            - name: config
+              mountPath: /vault/config
+              readOnly: true
+            - name: policies
+              mountPath: /vault/policies
+              readOnly: true
+            - name: certs
+              mountPath: /vault/tls
+              readOnly: true
+            - name: data
+              mountPath: /vault/data
+      volumes:
+        - name: config
+          configMap:
+            name: vault-config
+        - name: policies
+          configMap:
+            name: vault-policies
+        - name: certs
+          secret:
+            secretName: vault-certs
+            defaultMode: 0440
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          app.kubernetes.io/name: vault
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: ${VAULT_STORAGE_CLASS}
+        resources:
+          requests:
+            storage: ${VAULT_VOLUME_SIZE}

@@ -1,0 +1,40 @@
+# Each pod's own name, vault-<n>.vault-internal.<namespace>.svc, used for the api/cluster
+# addresses and raft's retry_join. Published before the pods are ready (they aren't ready
+# until unsealed) so the nodes can find each other to join.
+apiVersion: v1
+kind: Service
+metadata:
+  name: vault-internal
+  labels:
+    app.kubernetes.io/name: vault
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app.kubernetes.io/name: vault
+  ports:
+    - name: https
+      port: ${VAULT_API_PORT}
+      targetPort: https
+      protocol: TCP
+    - name: cluster
+      port: ${VAULT_CLUSTER_PORT}
+      targetPort: cluster
+      protocol: TCP
+---
+# The active (leader) node, labelled by Vault itself. nginx proxies vault.$DOMAIN here.
+apiVersion: v1
+kind: Service
+metadata:
+  name: vault-active
+  labels:
+    app.kubernetes.io/name: vault
+spec:
+  selector:
+    app.kubernetes.io/name: vault
+    vault-active: "true"
+  ports:
+    - name: https
+      port: ${VAULT_API_PORT}
+      targetPort: https
+      protocol: TCP
