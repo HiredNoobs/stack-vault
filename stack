@@ -197,21 +197,24 @@ function vault_init {
   log_warning "The unseal keys and root token are in '$SECRETS/keys.json', back them up outside Vault (it can't give them back while it's sealed)."
 }
 
-# Keys are passed on stdin, so they don't show up in process lists.
+# Keys are passed on stdin, so they don't show up in process lists. 'vault operator unseal'
+# can't read a key from stdin ('-' is taken as the key), 'vault write' can with key=-. Its
+# output isn't a normal secret so the seal status is checked separately. printf, not <<<, so
+# there's no trailing newline in the key.
 function unseal_pod {
   local pod="$1" key out
 
   log_info "Unsealing $pod..."
 
   for key in $(jq -r '.keys[]' "$SECRETS/keys.json"); do
-    if ! out=$(kubectl exec -i "$pod" --namespace "$K8S_NAMESPACE" -c vault -- \
-                 vault operator unseal -format=json - <<< "$key" 2>&1); then
+    if ! out=$(printf '%s' "$key" | kubectl exec -i "$pod" --namespace "$K8S_NAMESPACE" -c vault -- \
+                 vault write sys/unseal key=- 2>&1); then
       # e.g. a new node that hasn't joined the cluster yet, it's tried again on the next pass.
       log_warning "Couldn't unseal $pod yet: $out"
       return 0
     fi
 
-    if [[ "$(jq -r '.sealed' <<< "$out" 2> /dev/null)" == "false" ]]; then
+    if [[ "$(jq -r '.sealed' <<< "$(pod_status "$pod")" 2> /dev/null)" == "false" ]]; then
       log_info "$pod is unsealed."
       return 0
     fi
