@@ -73,7 +73,7 @@ if ! vault read auth/userpass/users/$VAULT_INIT_USERNAME >/dev/null 2>&1; then
   echo "Creating user '$VAULT_INIT_USERNAME'..."
   vault write auth/userpass/users/$VAULT_INIT_USERNAME \
     password=$VAULT_INIT_PASSWORD \
-    policies=lab-policy
+    token_policies=lab-policy,labv2-policy
 else
   echo "User '$VAULT_INIT_USERNAME' already exists."
 
